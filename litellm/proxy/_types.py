@@ -1,16 +1,12 @@
 import enum
 import json
-import os
-import sys
-import traceback
 import uuid
-from dataclasses import fields
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Extra, Field, Json, model_validator
-from typing_extensions import Annotated, TypedDict
+from pydantic import BaseModel, ConfigDict, Field, Json, model_validator
+from typing_extensions import TypedDict
 
 from litellm.types.integrations.slack_alerting import AlertType
 from litellm.types.router import RouterErrors, UpdateRouterConfig
@@ -261,10 +257,6 @@ class LiteLLMRoutes(enum.Enum):
     # NOTE: ROUTES ONLY FOR MASTER KEY - only the Master Key should be able to Reset Spend
     master_key_only_routes = ["/global/spend/reset", "/key/list"]
 
-    sso_only_routes = [
-        "/sso/get/ui_settings",
-    ]
-
     management_routes = [  # key
         "/key/generate",
         "/key/{token_id}/regenerate",
@@ -347,33 +339,30 @@ class LiteLLMRoutes(enum.Enum):
         "/health/services",
     ] + info_routes
 
-    internal_user_routes = (
-        [
-            "/key/generate",
-            "/key/{token_id}/regenerate",
-            "/key/update",
-            "/key/delete",
-            "/key/health",
-            "/key/info",
-            "/global/spend/tags",
-            "/global/spend/keys",
-            "/global/spend/models",
-            "/global/spend/provider",
-            "/global/spend/end_users",
-            "/global/activity",
-            "/global/activity/model",
-        ]
-        + spend_tracking_routes
-        + sso_only_routes
-    )
+    internal_user_routes = [
+        "/key/generate",
+        "/key/{token_id}/regenerate",
+        "/key/update",
+        "/key/delete",
+        "/key/health",
+        "/key/info",
+        "/global/spend/tags",
+        "/global/spend/keys",
+        "/global/spend/models",
+        "/global/spend/provider",
+        "/global/spend/end_users",
+        "/global/activity",
+        "/global/activity/model",
+    ] + spend_tracking_routes
 
     internal_user_view_only_routes = (
-        spend_tracking_routes + global_spend_tracking_routes + sso_only_routes
+        spend_tracking_routes + global_spend_tracking_routes
     )
 
     self_managed_routes = [
         "/team/member_add",
         "/team/member_delete",
+        "/model/new",
     ]  # routes that manage their own allowed/disallowed logic
 
     ## Org Admin Routes ##
@@ -1438,6 +1427,8 @@ class UserAPIKeyAuth(
     user_tpm_limit: Optional[int] = None
     user_rpm_limit: Optional[int] = None
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     @model_validator(mode="before")
     @classmethod
     def check_api_key(cls, values):
@@ -1448,9 +1439,6 @@ class UserAPIKeyAuth(
             ).startswith("sk-"):
                 values.update({"api_key": hash_token(values.get("api_key"))})
         return values
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class UserInfoResponse(LiteLLMPydanticObjectBase):
@@ -1904,7 +1892,7 @@ class CommonProxyErrors(str, enum.Enum):
     db_not_connected_error = "DB not connected"
     no_llm_router = "No models configured on proxy"
     not_allowed_access = "Admin-only endpoint. Not allowed to access this."
-    not_premium_user = "You must be a LiteLLM Enterprise user to use this feature. If you have a license please set `LITELLM_LICENSE` in your env. If you want to obtain a license meet with us here: https://calendly.com/d/4mp-gd3-k5k/litellm-1-1-onboarding-chat. \nPricing: https://www.litellm.ai/#pricing"
+    not_premium_user = "You must be a LiteLLM Enterprise user to use this feature. If you have a license please set `LITELLM_LICENSE` in your env. Get a 7 day trial key here: https://www.litellm.ai/#trial. \nPricing: https://www.litellm.ai/#pricing"
 
 
 class SpendCalculateRequest(LiteLLMPydanticObjectBase):
@@ -2205,3 +2193,11 @@ class ProviderBudgetResponse(LiteLLMPydanticObjectBase):
     providers: Dict[str, ProviderBudgetResponseObject] = (
         {}
     )  # Dictionary mapping provider names to their budget configurations
+
+
+class ProxyStateVariables(TypedDict):
+    """
+    TypedDict for Proxy state variables.
+    """
+
+    spend_logs_row_count: int

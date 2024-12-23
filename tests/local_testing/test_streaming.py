@@ -17,6 +17,7 @@ from pydantic import BaseModel
 import litellm.litellm_core_utils
 import litellm.litellm_core_utils.litellm_logging
 from litellm.utils import ModelResponseListIterator
+from litellm.types.utils import ModelResponseStream
 
 sys.path.insert(
     0, os.path.abspath("../..")
@@ -69,7 +70,7 @@ first_openai_chunk_example = {
 
 def validate_first_format(chunk):
     # write a test to make sure chunk follows the same format as first_openai_chunk_example
-    assert isinstance(chunk, ModelResponse), "Chunk should be a dictionary."
+    assert isinstance(chunk, ModelResponseStream), "Chunk should be a dictionary."
     assert isinstance(chunk["id"], str), "'id' should be a string."
     assert isinstance(chunk["object"], str), "'object' should be a string."
     assert isinstance(chunk["created"], int), "'created' should be an integer."
@@ -99,7 +100,7 @@ second_openai_chunk_example = {
 
 
 def validate_second_format(chunk):
-    assert isinstance(chunk, ModelResponse), "Chunk should be a dictionary."
+    assert isinstance(chunk, ModelResponseStream), "Chunk should be a dictionary."
     assert isinstance(chunk["id"], str), "'id' should be a string."
     assert isinstance(chunk["object"], str), "'object' should be a string."
     assert isinstance(chunk["created"], int), "'created' should be an integer."
@@ -137,7 +138,7 @@ def validate_last_format(chunk):
     """
     Ensure last chunk has no remaining content or tools
     """
-    assert isinstance(chunk, ModelResponse), "Chunk should be a dictionary."
+    assert isinstance(chunk, ModelResponseStream), "Chunk should be a dictionary."
     assert isinstance(chunk["id"], str), "'id' should be a string."
     assert isinstance(chunk["object"], str), "'object' should be a string."
     assert isinstance(chunk["created"], int), "'created' should be an integer."
@@ -606,14 +607,14 @@ def test_completion_azure_function_calling_stream():
 @pytest.mark.skip("Flaky ollama test - needs to be fixed")
 def test_completion_ollama_hosted_stream():
     try:
-        litellm.set_verbose = True
+        # litellm.set_verbose = True
         response = completion(
             model="ollama/phi",
             messages=messages,
-            max_tokens=10,
+            max_tokens=100,
             num_retries=3,
             timeout=20,
-            api_base="https://test-ollama-endpoint.onrender.com",
+            # api_base="https://test-ollama-endpoint.onrender.com",
             stream=True,
         )
         # Add any assertions here to check the response
@@ -1523,7 +1524,7 @@ async def test_parallel_streaming_requests(sync_mode, model):
             num_finish_reason = 0
             for chunk in response:
                 print(f"chunk: {chunk}")
-                if isinstance(chunk, ModelResponse):
+                if isinstance(chunk, ModelResponseStream):
                     if chunk.choices[0].finish_reason is not None:
                         num_finish_reason += 1
             assert num_finish_reason == 1
@@ -1541,7 +1542,7 @@ async def test_parallel_streaming_requests(sync_mode, model):
             num_finish_reason = 0
             async for chunk in response:
                 print(f"type of chunk: {type(chunk)}")
-                if isinstance(chunk, ModelResponse):
+                if isinstance(chunk, ModelResponseStream):
                     print(f"OUTSIDE CHUNK: {chunk.choices[0]}")
                     if chunk.choices[0].finish_reason is not None:
                         num_finish_reason += 1
@@ -2072,6 +2073,7 @@ def test_openai_chat_completion_complete_response_call():
         "azure/chatgpt-v-2",
         "claude-3-haiku-20240307",
         "o1-preview",
+        "o1",
         "azure/fake-o1-mini",
     ],
 )
@@ -3921,7 +3923,7 @@ def test_unit_test_perplexity_citations_chunk():
     ],
 )
 @pytest.mark.flaky(retries=3, delay=1)
-def test_streaming_tool_calls_valid_json_str(model):
+def test_aastreaming_tool_calls_valid_json_str(model):
     if "vertex_ai" in model:
         from test_amazing_vertex_completion import (
             load_vertex_ai_credentials,
@@ -3978,3 +3980,13 @@ def test_streaming_tool_calls_valid_json_str(model):
     for k, v in tool_call_id_arg_map.items():
         print("k={}, v={}".format(k, v))
         json.loads(v)  # valid json str
+
+
+def test_streaming_api_base():
+    litellm.set_verbose = False
+    stream = litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "Hey"}],
+        stream=True,
+    )
+    assert "https://api.openai.com" in stream._hidden_params["api_base"]

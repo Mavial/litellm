@@ -74,11 +74,7 @@ class ProviderField(TypedDict):
     field_value: str
 
 
-class ModelInfo(TypedDict, total=False):
-    """
-    Model info for a given model, this is information found in litellm.model_prices_and_context_window.json
-    """
-
+class ModelInfoBase(TypedDict, total=False):
     key: Required[str]  # the key in litellm.model_cost which is returned
 
     max_tokens: Required[Optional[int]]
@@ -119,7 +115,6 @@ class ModelInfo(TypedDict, total=False):
             "completion", "embedding", "image_generation", "chat", "audio_transcription"
         ]
     ]
-    supported_openai_params: Required[Optional[List[str]]]
     supports_system_messages: Optional[bool]
     supports_response_schema: Optional[bool]
     supports_vision: Optional[bool]
@@ -131,6 +126,14 @@ class ModelInfo(TypedDict, total=False):
     supports_pdf_input: Optional[bool]
     tpm: Optional[int]
     rpm: Optional[int]
+
+
+class ModelInfo(ModelInfoBase, total=False):
+    """
+    Model info for a given model, this is information found in litellm.model_prices_and_context_window.json
+    """
+
+    supported_openai_params: Required[Optional[List[str]]]
 
 
 class GenericStreamingChunk(TypedDict, total=False):
@@ -805,6 +808,8 @@ class ModelResponseStream(ModelResponseBase):
     def __init__(
         self,
         choices: Optional[List[Union[StreamingChoices, dict, BaseModel]]] = None,
+        id: Optional[str] = None,
+        created: Optional[int] = None,
         **kwargs,
     ):
         if choices is not None and isinstance(choices, list):
@@ -821,6 +826,20 @@ class ModelResponseStream(ModelResponseBase):
             kwargs["choices"] = new_choices
         else:
             kwargs["choices"] = [StreamingChoices()]
+
+        if id is None:
+            id = _generate_id()
+        else:
+            id = id
+        if created is None:
+            created = int(time.time())
+        else:
+            created = created
+
+        kwargs["id"] = id
+        kwargs["created"] = created
+        kwargs["object"] = "chat.completion.chunk"
+
         super().__init__(**kwargs)
 
     def __contains__(self, key):
@@ -1358,83 +1377,6 @@ class ResponseFormatChunk(TypedDict, total=False):
     response_schema: dict
 
 
-all_litellm_params = [
-    "metadata",
-    "litellm_trace_id",
-    "tags",
-    "acompletion",
-    "aimg_generation",
-    "atext_completion",
-    "text_completion",
-    "caching",
-    "mock_response",
-    "api_key",
-    "api_version",
-    "api_base",
-    "force_timeout",
-    "logger_fn",
-    "verbose",
-    "custom_llm_provider",
-    "litellm_logging_obj",
-    "litellm_call_id",
-    "use_client",
-    "id",
-    "fallbacks",
-    "azure",
-    "headers",
-    "model_list",
-    "num_retries",
-    "context_window_fallback_dict",
-    "retry_policy",
-    "retry_strategy",
-    "roles",
-    "final_prompt_value",
-    "bos_token",
-    "eos_token",
-    "request_timeout",
-    "complete_response",
-    "self",
-    "client",
-    "rpm",
-    "tpm",
-    "max_parallel_requests",
-    "input_cost_per_token",
-    "output_cost_per_token",
-    "input_cost_per_second",
-    "output_cost_per_second",
-    "hf_model_name",
-    "model_info",
-    "proxy_server_request",
-    "preset_cache_key",
-    "caching_groups",
-    "ttl",
-    "cache",
-    "no-log",
-    "base_model",
-    "stream_timeout",
-    "supports_system_message",
-    "region_name",
-    "allowed_model_region",
-    "model_config",
-    "fastest_response",
-    "cooldown_time",
-    "cache_key",
-    "max_retries",
-    "azure_ad_token_provider",
-    "tenant_id",
-    "client_id",
-    "client_secret",
-    "user_continue_message",
-    "configurable_clientside_auth_params",
-    "weight",
-    "ensure_alternating_roles",
-    "assistant_continue_message",
-    "user_continue_message",
-    "fallback_depth",
-    "max_fallbacks",
-]
-
-
 class LoggedLiteLLMParams(TypedDict, total=False):
     force_timeout: Optional[float]
     custom_llm_provider: Optional[str]
@@ -1494,6 +1436,7 @@ class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_team_id: Optional[str]
     user_api_key_user_id: Optional[str]
     user_api_key_team_alias: Optional[str]
+    user_api_key_end_user_id: Optional[str]
 
 
 class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
@@ -1641,6 +1584,87 @@ class StandardCallbackDynamicParams(TypedDict, total=False):
     turn_off_message_logging: Optional[bool]  # when true will not log messages
 
 
+all_litellm_params = [
+    "metadata",
+    "litellm_trace_id",
+    "tags",
+    "acompletion",
+    "aimg_generation",
+    "atext_completion",
+    "text_completion",
+    "caching",
+    "mock_response",
+    "api_key",
+    "api_version",
+    "prompt_id",
+    "prompt_variables",
+    "api_base",
+    "force_timeout",
+    "logger_fn",
+    "verbose",
+    "custom_llm_provider",
+    "litellm_logging_obj",
+    "litellm_call_id",
+    "use_client",
+    "id",
+    "fallbacks",
+    "azure",
+    "headers",
+    "model_list",
+    "num_retries",
+    "context_window_fallback_dict",
+    "retry_policy",
+    "retry_strategy",
+    "roles",
+    "final_prompt_value",
+    "bos_token",
+    "eos_token",
+    "request_timeout",
+    "complete_response",
+    "self",
+    "client",
+    "rpm",
+    "tpm",
+    "max_parallel_requests",
+    "input_cost_per_token",
+    "output_cost_per_token",
+    "input_cost_per_second",
+    "output_cost_per_second",
+    "hf_model_name",
+    "model_info",
+    "proxy_server_request",
+    "preset_cache_key",
+    "caching_groups",
+    "ttl",
+    "cache",
+    "no-log",
+    "base_model",
+    "stream_timeout",
+    "supports_system_message",
+    "region_name",
+    "allowed_model_region",
+    "model_config",
+    "fastest_response",
+    "cooldown_time",
+    "cache_key",
+    "max_retries",
+    "azure_ad_token_provider",
+    "tenant_id",
+    "client_id",
+    "client_secret",
+    "user_continue_message",
+    "configurable_clientside_auth_params",
+    "weight",
+    "ensure_alternating_roles",
+    "assistant_continue_message",
+    "user_continue_message",
+    "fallback_depth",
+    "max_fallbacks",
+    "max_budget",
+    "budget_duration",
+] + list(StandardCallbackDynamicParams.__annotations__.keys())
+
+
 class KeyGenerationConfig(TypedDict, total=False):
     required_params: List[
         str
@@ -1658,3 +1682,98 @@ class PersonalUIKeyGenerationConfig(KeyGenerationConfig):
 class StandardKeyGenerationConfig(TypedDict, total=False):
     team_key_generation: TeamUIKeyGenerationConfig
     personal_key_generation: PersonalUIKeyGenerationConfig
+
+
+class GenericBudgetInfo(BaseModel):
+    time_period: str  # e.g., '1d', '30d'
+    budget_limit: float
+
+
+GenericBudgetConfigType = Dict[str, GenericBudgetInfo]
+
+
+class BudgetConfig(BaseModel):
+    max_budget: float
+    budget_duration: str
+
+
+class LlmProviders(str, Enum):
+    OPENAI = "openai"
+    OPENAI_LIKE = "openai_like"  # embedding only
+    JINA_AI = "jina_ai"
+    XAI = "xai"
+    CUSTOM_OPENAI = "custom_openai"
+    TEXT_COMPLETION_OPENAI = "text-completion-openai"
+    COHERE = "cohere"
+    COHERE_CHAT = "cohere_chat"
+    CLARIFAI = "clarifai"
+    ANTHROPIC = "anthropic"
+    ANTHROPIC_TEXT = "anthropic_text"
+    REPLICATE = "replicate"
+    HUGGINGFACE = "huggingface"
+    TOGETHER_AI = "together_ai"
+    OPENROUTER = "openrouter"
+    VERTEX_AI = "vertex_ai"
+    VERTEX_AI_BETA = "vertex_ai_beta"
+    GEMINI = "gemini"
+    AI21 = "ai21"
+    BASETEN = "baseten"
+    AZURE = "azure"
+    AZURE_TEXT = "azure_text"
+    AZURE_AI = "azure_ai"
+    SAGEMAKER = "sagemaker"
+    SAGEMAKER_CHAT = "sagemaker_chat"
+    BEDROCK = "bedrock"
+    VLLM = "vllm"
+    NLP_CLOUD = "nlp_cloud"
+    PETALS = "petals"
+    OOBABOOGA = "oobabooga"
+    OLLAMA = "ollama"
+    OLLAMA_CHAT = "ollama_chat"
+    DEEPINFRA = "deepinfra"
+    PERPLEXITY = "perplexity"
+    MISTRAL = "mistral"
+    GROQ = "groq"
+    NVIDIA_NIM = "nvidia_nim"
+    CEREBRAS = "cerebras"
+    AI21_CHAT = "ai21_chat"
+    VOLCENGINE = "volcengine"
+    CODESTRAL = "codestral"
+    TEXT_COMPLETION_CODESTRAL = "text-completion-codestral"
+    DEEPSEEK = "deepseek"
+    SAMBANOVA = "sambanova"
+    MARITALK = "maritalk"
+    VOYAGE = "voyage"
+    CLOUDFLARE = "cloudflare"
+    XINFERENCE = "xinference"
+    FIREWORKS_AI = "fireworks_ai"
+    FRIENDLIAI = "friendliai"
+    WATSONX = "watsonx"
+    WATSONX_TEXT = "watsonx_text"
+    TRITON = "triton"
+    PREDIBASE = "predibase"
+    DATABRICKS = "databricks"
+    EMPOWER = "empower"
+    GITHUB = "github"
+    CUSTOM = "custom"
+    LITELLM_PROXY = "litellm_proxy"
+    HOSTED_VLLM = "hosted_vllm"
+    LM_STUDIO = "lm_studio"
+    GALADRIEL = "galadriel"
+    INFINITY = "infinity"
+
+
+class LiteLLMLoggingBaseClass:
+    """
+    Base class for logging pre and post call
+
+    Meant to simplify type checking for logging obj.
+    """
+
+    def pre_call(self, input, api_key, model=None, additional_args={}):
+        pass
+
+    def post_call(
+        self, original_response, input=None, api_key=None, additional_args={}
+    ):
+        pass

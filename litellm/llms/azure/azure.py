@@ -2,12 +2,10 @@ import asyncio
 import json
 import os
 import time
-import types
-from typing import Any, Callable, Coroutine, Iterable, List, Literal, Optional, Union
+from typing import Any, Callable, Coroutine, List, Literal, Optional, Union
 
 import httpx  # type: ignore
 from openai import AsyncAzureOpenAI, AzureOpenAI
-from typing_extensions import overload
 
 import litellm
 from litellm.caching.caching import DualCache
@@ -17,11 +15,14 @@ from litellm.llms.custom_httpx.http_handler import (
     HTTPHandler,
     get_async_httpx_client,
 )
-from litellm.types.utils import EmbeddingResponse
+from litellm.types.utils import (
+    EmbeddingResponse,
+    ImageResponse,
+    LlmProviders,
+    ModelResponse,
+)
 from litellm.utils import (
     CustomStreamWrapper,
-    ModelResponse,
-    UnsupportedParamsError,
     convert_to_model_response_object,
     get_secret,
     modify_url,
@@ -342,7 +343,8 @@ class AzureChatCompletion(BaseLLM):
         headers: Optional[dict] = None,
         client=None,
     ):
-        super().completion()
+        if headers:
+            optional_params["extra_headers"] = headers
         try:
             if model is None or messages is None:
                 raise AzureOpenAIError(
@@ -851,8 +853,10 @@ class AzureChatCompletion(BaseLLM):
         max_retries: Optional[int] = None,
         client=None,
         aembedding=None,
-    ) -> litellm.EmbeddingResponse:
-        super().embedding()
+        headers: Optional[dict] = None,
+    ) -> EmbeddingResponse:
+        if headers:
+            optional_params["extra_headers"] = headers
         if self._client_session is None:
             self._client_session = self.create_client_session()
         try:
@@ -960,7 +964,7 @@ class AzureChatCompletion(BaseLLM):
                 _params["timeout"] = httpx.Timeout(timeout=600.0, connect=5.0)
 
             async_handler = get_async_httpx_client(
-                llm_provider=litellm.LlmProviders.AZURE,
+                llm_provider=LlmProviders.AZURE,
                 params=_params,
             )
         else:
@@ -1239,11 +1243,11 @@ class AzureChatCompletion(BaseLLM):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
         api_version: Optional[str] = None,
-        model_response: Optional[litellm.utils.ImageResponse] = None,
+        model_response: Optional[ImageResponse] = None,
         azure_ad_token: Optional[str] = None,
         client=None,
         aimg_generation=None,
-    ) -> litellm.ImageResponse:
+    ) -> ImageResponse:
         try:
             if model and len(model) > 0:
                 model = model
@@ -1382,7 +1386,7 @@ class AzureChatCompletion(BaseLLM):
             input=input,
             **optional_params,
         )
-        return response
+        return HttpxBinaryResponseContent(response=response.response)
 
     async def async_audio_speech(
         self,
@@ -1411,14 +1415,14 @@ class AzureChatCompletion(BaseLLM):
             client_type="async",
         )  # type: ignore
 
-        response = await azure_client.audio.speech.create(
+        azure_response = await azure_client.audio.speech.create(
             model=model,
             voice=voice,  # type: ignore
             input=input,
             **optional_params,
         )
 
-        return response
+        return HttpxBinaryResponseContent(response=azure_response.response)
 
     def get_headers(
         self,
@@ -1507,7 +1511,7 @@ class AzureChatCompletion(BaseLLM):
     ) -> dict:
         client_session = (
             litellm.aclient_session
-            or get_async_httpx_client(llm_provider=litellm.LlmProviders.AZURE).client
+            or get_async_httpx_client(llm_provider=LlmProviders.AZURE).client
         )  # handle dall-e-2 calls
 
         if "gateway.ai.cloudflare.com" in api_base:

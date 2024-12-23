@@ -20,8 +20,10 @@ import litellm
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, headers
 from litellm.proxy.utils import (
     duration_in_seconds,
-    _extract_from_regex,
+)
+from litellm.litellm_core_utils.duration_parser import (
     get_last_day_of_month,
+    _extract_from_regex,
 )
 from litellm.utils import (
     check_valid_key,
@@ -37,6 +39,8 @@ from litellm.utils import (
     trim_messages,
     validate_environment,
 )
+from unittest.mock import AsyncMock, MagicMock, patch
+
 
 # Assuming your trim_messages, shorten_message_to_fit_limit, and get_token_count functions are all in a module named 'message_utils'
 
@@ -1109,8 +1113,8 @@ def test_models_by_provider():
     "litellm_params, disable_end_user_cost_tracking, expected_end_user_id",
     [
         ({}, False, None),
-        ({"proxy_server_request": {"body": {"user": "123"}}}, False, "123"),
-        ({"proxy_server_request": {"body": {"user": "123"}}}, True, None),
+        ({"user_api_key_end_user_id": "123"}, False, "123"),
+        ({"user_api_key_end_user_id": "123"}, True, None),
     ],
 )
 def test_get_end_user_id_for_cost_tracking(
@@ -1129,8 +1133,8 @@ def test_get_end_user_id_for_cost_tracking(
     "litellm_params, disable_end_user_cost_tracking_prometheus_only, expected_end_user_id",
     [
         ({}, False, None),
-        ({"proxy_server_request": {"body": {"user": "123"}}}, False, "123"),
-        ({"proxy_server_request": {"body": {"user": "123"}}}, True, None),
+        ({"user_api_key_end_user_id": "123"}, False, "123"),
+        ({"user_api_key_end_user_id": "123"}, True, None),
     ],
 )
 def test_get_end_user_id_for_cost_tracking_prometheus_only(
@@ -1147,3 +1151,92 @@ def test_get_end_user_id_for_cost_tracking_prometheus_only(
         )
         == expected_end_user_id
     )
+
+
+def test_is_prompt_caching_enabled_error_handling():
+    """
+    Assert that `is_prompt_caching_valid_prompt` safely handles errors in `token_counter`.
+    """
+    with patch(
+        "litellm.utils.token_counter",
+        side_effect=Exception(
+            "Mocked error, This should not raise an error. Instead is_prompt_caching_valid_prompt should return False."
+        ),
+    ):
+        result = litellm.utils.is_prompt_caching_valid_prompt(
+            messages=[{"role": "user", "content": "test"}],
+            tools=None,
+            custom_llm_provider="anthropic",
+            model="anthropic/claude-3-5-sonnet-20240620",
+        )
+
+        assert result is False  # Should return False when an error occurs
+
+
+def test_is_prompt_caching_enabled_return_default_image_dimensions():
+    """
+    Assert that `is_prompt_caching_valid_prompt` calls token_counter with use_default_image_token_count=True
+    when processing messages containing images
+
+    IMPORTANT: Ensures Get token counter does not make a GET request to the image url
+    """
+    with patch("litellm.utils.token_counter") as mock_token_counter:
+        litellm.utils.is_prompt_caching_valid_prompt(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is in this image?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://www.gstatic.com/webp/gallery/1.webp",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                }
+            ],
+            tools=None,
+            custom_llm_provider="openai",
+            model="gpt-4o-mini",
+        )
+
+        # Assert token_counter was called with use_default_image_token_count=True
+        args_to_mock_token_counter = mock_token_counter.call_args[1]
+        print("args_to_mock", args_to_mock_token_counter)
+        assert args_to_mock_token_counter["use_default_image_token_count"] is True
+
+
+def test_token_counter_with_image_url_with_detail_high():
+    """
+    Assert that token_counter does not make a GET request to the image url when `use_default_image_token_count=True`
+
+    PROD TEST this is importat - Can impact latency very badly
+    """
+    from litellm.constants import DEFAULT_IMAGE_TOKEN_COUNT
+    from litellm._logging import verbose_logger
+    import logging
+
+    verbose_logger.setLevel(logging.DEBUG)
+
+    _tokens = litellm.utils.token_counter(
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://www.gstatic.com/webp/gallery/1.webp",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        ],
+        model="gpt-4o-mini",
+        use_default_image_token_count=True,
+    )
+    print("tokens", _tokens)
+    assert _tokens == DEFAULT_IMAGE_TOKEN_COUNT + 7

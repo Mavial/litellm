@@ -3,7 +3,7 @@ import os
 import sys
 from unittest.mock import Mock
 from litellm.proxy.utils import _get_redoc_url, _get_docs_url
-
+import json
 import pytest
 from fastapi import Request
 
@@ -885,3 +885,126 @@ def test_enforced_params_check(
             user_api_key_dict=user_api_key_dict,
             premium_user=True,
         )
+
+
+def test_get_key_models():
+    from litellm.proxy.auth.model_checks import get_key_models
+    from collections import defaultdict
+
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test_api_key",
+        user_id="test_user_id",
+        org_id="test_org_id",
+        models=["default"],
+    )
+    proxy_model_list = ["gpt-4o", "gpt-3.5-turbo"]
+    model_access_groups = defaultdict(list)
+    model_access_groups["default"].extend(["gpt-4o", "gpt-3.5-turbo"])
+    model_access_groups["default"].extend(["gpt-4o-mini"])
+    model_access_groups["team2"].extend(["gpt-3.5-turbo"])
+
+    result = get_key_models(
+        user_api_key_dict=user_api_key_dict,
+        proxy_model_list=proxy_model_list,
+        model_access_groups=model_access_groups,
+    )
+    assert result == ["gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini"]
+
+
+def test_get_team_models():
+    from litellm.proxy.auth.model_checks import get_team_models
+    from collections import defaultdict
+
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test_api_key",
+        user_id="test_user_id",
+        org_id="test_org_id",
+        models=[],
+        team_models=["default"],
+    )
+    proxy_model_list = ["gpt-4o", "gpt-3.5-turbo"]
+    model_access_groups = defaultdict(list)
+    model_access_groups["default"].extend(["gpt-4o", "gpt-3.5-turbo"])
+    model_access_groups["default"].extend(["gpt-4o-mini"])
+    model_access_groups["team2"].extend(["gpt-3.5-turbo"])
+
+    result = get_team_models(
+        user_api_key_dict=user_api_key_dict,
+        proxy_model_list=proxy_model_list,
+        model_access_groups=model_access_groups,
+    )
+    assert result == ["gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini"]
+
+
+def test_update_config_fields():
+    from litellm.proxy.proxy_server import ProxyConfig
+
+    proxy_config = ProxyConfig()
+
+    args = {
+        "current_config": {
+            "litellm_settings": {
+                "default_team_settings": [
+                    {
+                        "team_id": "c91e32bb-0f2a-4aa1-86c4-307ca2e03ea3",
+                        "success_callback": ["langfuse"],
+                        "failure_callback": ["langfuse"],
+                        "langfuse_public_key": "my-fake-key",
+                        "langfuse_secret": "my-fake-secret",
+                    }
+                ]
+            },
+        },
+        "param_name": "litellm_settings",
+        "db_param_value": {
+            "telemetry": False,
+            "drop_params": True,
+            "num_retries": 5,
+            "request_timeout": 600,
+            "success_callback": ["langfuse"],
+            "default_team_settings": [],
+            "context_window_fallbacks": [{"gpt-3.5-turbo": ["gpt-3.5-turbo-large"]}],
+        },
+    }
+    updated_config = proxy_config._update_config_fields(**args)
+
+    all_team_config = updated_config["litellm_settings"]["default_team_settings"]
+
+    # check if team id config returned
+    team_config = proxy_config._get_team_config(
+        team_id="c91e32bb-0f2a-4aa1-86c4-307ca2e03ea3", all_teams_config=all_team_config
+    )
+    assert team_config["langfuse_public_key"] == "my-fake-key"
+    assert team_config["langfuse_secret"] == "my-fake-secret"
+
+
+@pytest.mark.parametrize(
+    "proxy_model_list,provider",
+    [
+        (["openai/*"], "openai"),
+        (["bedrock/*"], "bedrock"),
+        (["anthropic/*"], "anthropic"),
+        (["cohere/*"], "cohere"),
+    ],
+)
+def test_get_complete_model_list(proxy_model_list, provider):
+    """
+    Test that get_complete_model_list correctly expands model groups like 'openai/*' into individual models with provider prefixes
+    """
+    from litellm.proxy.auth.model_checks import get_complete_model_list
+
+    complete_list = get_complete_model_list(
+        proxy_model_list=proxy_model_list,
+        key_models=[],
+        team_models=[],
+        user_model=None,
+        infer_model_from_keys=False,
+    )
+
+    # Check that we got a non-empty list back
+    assert len(complete_list) > 0
+
+    print("complete_list", json.dumps(complete_list, indent=4))
+
+    for _model in complete_list:
+        assert provider in _model

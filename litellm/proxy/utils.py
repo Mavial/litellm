@@ -4,33 +4,16 @@ import hashlib
 import importlib
 import json
 import os
-import re
 import smtplib
-import subprocess
 import threading
 import time
 import traceback
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from functools import wraps
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    List,
-    Literal,
-    Optional,
-    Tuple,
-    Union,
-    get_args,
-    overload,
-)
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Union, overload
 
-from litellm.litellm_core_utils.duration_parser import (
-    _extract_from_regex,
-    duration_in_seconds,
-    get_last_day_of_month,
-)
+from litellm.litellm_core_utils.duration_parser import duration_in_seconds
 from litellm.proxy._types import (
     DB_CONNECTION_ERROR_TYPES,
     ProxyErrorTypes,
@@ -44,20 +27,12 @@ except ImportError:
         "backoff is not installed. Please install it via 'pip install backoff'"
     )
 
-import httpx
-from fastapi import HTTPException, Request, status
-from pydantic import BaseModel
+from fastapi import HTTPException, status
 
 import litellm
 import litellm.litellm_core_utils
 import litellm.litellm_core_utils.litellm_logging
-from litellm import (
-    EmbeddingResponse,
-    ImageResponse,
-    ModelResponse,
-    Router,
-    get_litellm_params,
-)
+from litellm import EmbeddingResponse, ImageResponse, ModelResponse, Router
 from litellm._logging import verbose_proxy_logger
 from litellm._service_logger import ServiceLogging, ServiceTypes
 from litellm.caching.caching import DualCache, RedisCache
@@ -71,13 +46,9 @@ from litellm.llms.custom_httpx.httpx_handler import HTTPHandler
 from litellm.proxy._types import (
     AlertType,
     CallInfo,
-    DynamoDBArgs,
     LiteLLM_VerificationTokenView,
-    LitellmUserRoles,
     Member,
     ResetTeamBudgetRequest,
-    SpendLogsMetadata,
-    SpendLogsPayload,
     UserAPIKeyAuth,
 )
 from litellm.proxy.db.create_views import (
@@ -289,7 +260,7 @@ class ProxyLogging:
 
     def startup_event(
         self,
-        llm_router: Optional[litellm.Router],
+        llm_router: Optional[Router],
         redis_usage_cache: Optional[RedisCache],
     ):
         """Initialize logging and alerting on proxy startup"""
@@ -359,7 +330,7 @@ class ProxyLogging:
         if redis_cache is not None:
             self.internal_usage_cache.dual_cache.redis_cache = redis_cache
 
-    def _init_litellm_callbacks(self, llm_router: Optional[litellm.Router] = None):
+    def _init_litellm_callbacks(self, llm_router: Optional[Router] = None):
         litellm.callbacks.append(self.max_parallel_request_limiter)  # type: ignore
         litellm.callbacks.append(self.max_budget_limiter)  # type: ignore
         litellm.callbacks.append(self.cache_control_check)  # type: ignore
@@ -1485,7 +1456,8 @@ class PrismaClient:
             elif table_name == "team":
                 if query_type == "find_unique":
                     response = await self.db.litellm_teamtable.find_unique(
-                        where={"team_id": team_id}  # type: ignore
+                        where={"team_id": team_id},  # type: ignore
+                        include={"litellm_model_table": True},  # type: ignore
                     )
                 elif query_type == "find_all" and reset_at is not None:
                     response = await self.db.litellm_teamtable.find_many(
@@ -2183,6 +2155,35 @@ class PrismaClient:
             )
             raise e
 
+    async def _get_spend_logs_row_count(self) -> int:
+        try:
+            sql_query = """
+            SELECT reltuples::BIGINT
+            FROM pg_class
+            WHERE oid = '"LiteLLM_SpendLogs"'::regclass;
+            """
+            result = await self.db.query_raw(query=sql_query)
+            return result[0]["reltuples"]
+        except Exception as e:
+            verbose_proxy_logger.error(
+                f"Error getting LiteLLM_SpendLogs row count: {e}"
+            )
+            return 0
+
+    async def _set_spend_logs_row_count_in_proxy_state(self) -> None:
+        """
+        Set the `LiteLLM_SpendLogs`row count in proxy state.
+
+        This is used later to determine if we should run expensive UI Usage queries.
+        """
+        from litellm.proxy.proxy_server import proxy_state
+
+        _num_spend_logs_rows = await self._get_spend_logs_row_count()
+        proxy_state.set_proxy_state_variable(
+            variable_name="spend_logs_row_count",
+            value=_num_spend_logs_rows,
+        )
+
 
 ### CUSTOM FILE ###
 def get_instance_fn(value: str, config_file_path: Optional[str] = None) -> Any:
@@ -2261,7 +2262,6 @@ async def send_email(receiver_email, subject, html):
     sender_email,
     """
     ## SERVER SETUP ##
-    from litellm.proxy.proxy_server import CommonProxyErrors, premium_user
 
     smtp_host = os.getenv("SMTP_HOST")
     smtp_port = int(os.getenv("SMTP_PORT", "587"))  # default to port 587

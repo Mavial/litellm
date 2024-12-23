@@ -8,8 +8,6 @@ import sys
 from datetime import datetime
 from unittest.mock import AsyncMock
 
-from pydantic.main import Model
-
 sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system-path
@@ -448,3 +446,27 @@ def test_get_response_time():
 
     # For streaming, should return completion_start_time - start_time
     assert response_time == 2.0
+
+
+@pytest.mark.parametrize(
+    "metadata, expected_requester_metadata",
+    [
+        ({"metadata": {"test": "test2"}}, {"test": "test2"}),
+        ({"metadata": {"test": "test2"}, "model_id": "test-model"}, {"test": "test2"}),
+        (
+            {
+                "metadata": {
+                    "test": "test2",
+                },
+                "model_id": "test-model",
+                "requester_metadata": {"test": "test2"},
+            },
+            {"test": "test2"},
+        ),
+    ],
+)
+def test_standard_logging_metadata_requester_metadata(
+    metadata, expected_requester_metadata
+):
+    result = StandardLoggingPayloadSetup.get_standard_logging_metadata(metadata)
+    assert result["requester_metadata"] == expected_requester_metadata

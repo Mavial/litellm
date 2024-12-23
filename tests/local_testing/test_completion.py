@@ -1819,6 +1819,43 @@ async def test_litellm_gateway_from_sdk():
         assert "hello" in mock_call.call_args.kwargs["extra_body"]
 
 
+@pytest.mark.asyncio
+async def test_litellm_gateway_from_sdk_structured_output():
+    from pydantic import BaseModel
+
+    class Result(BaseModel):
+        answer: str
+
+    litellm.set_verbose = True
+    from openai import OpenAI
+
+    openai_client = OpenAI(api_key="fake-key")
+
+    with patch.object(
+        openai_client.chat.completions, "create", new=MagicMock()
+    ) as mock_call:
+        try:
+            litellm.completion(
+                model="litellm_proxy/openai/gpt-4o",
+                messages=[
+                    {"role": "user", "content": "What is the capital of France?"}
+                ],
+                api_key="my-test-api-key",
+                user="test",
+                response_format=Result,
+                base_url="https://litellm.ml-serving-internal.scale.com",
+                client=openai_client,
+            )
+        except Exception as e:
+            print(e)
+
+        mock_call.assert_called_once()
+
+        print("Call KWARGS - {}".format(mock_call.call_args.kwargs))
+        json_schema = mock_call.call_args.kwargs["response_format"]
+        assert "json_schema" in json_schema
+
+
 # ################### Hugging Face Conversational models ########################
 # def hf_test_completion_conv():
 #     try:
@@ -1903,10 +1940,11 @@ def test_ollama_image():
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.headers = {"Content-Type": "application/json"}
+        data_json = json.loads(kwargs["data"])
         mock_response.json.return_value = {
             # return the image in the response so that it can be tested
             # against the original
-            "response": kwargs["json"]["images"]
+            "response": data_json["images"]
         }
         return mock_response
 
@@ -1934,9 +1972,10 @@ def test_ollama_image():
         [datauri_base64_data, datauri_base64_data],
     ]
 
+    client = HTTPHandler()
     for test in tests:
         try:
-            with patch("requests.post", side_effect=mock_post):
+            with patch.object(client, "post", side_effect=mock_post):
                 response = completion(
                     model="ollama/llava",
                     messages=[
@@ -1951,6 +1990,7 @@ def test_ollama_image():
                             ],
                         }
                     ],
+                    client=client,
                 )
                 if not test[1]:
                     # the conversion process may not always generate the same image,
@@ -2350,8 +2390,8 @@ def test_completion_ollama_hosted():
         response = completion(
             model="ollama/phi",
             messages=messages,
-            max_tokens=2,
-            api_base="https://test-ollama-endpoint.onrender.com",
+            max_tokens=20,
+            # api_base="https://test-ollama-endpoint.onrender.com",
         )
         # Add any assertions here to check the response
         print(response)
@@ -3094,6 +3134,7 @@ def test_completion_azure_deployment_id():
 import asyncio
 
 
+@pytest.mark.skip(reason="replicate endpoints are extremely flaky")
 @pytest.mark.parametrize("sync_mode", [False, True])
 @pytest.mark.asyncio
 async def test_completion_replicate_llama3(sync_mode):
@@ -3976,24 +4017,22 @@ def test_completion_deepseek():
 
 
 @pytest.mark.skip(reason="Account deleted by IBM.")
-def test_completion_watsonx():
+def test_completion_watsonx_error():
     litellm.set_verbose = True
-    model_name = "watsonx/ibm/granite-13b-chat-v2"
-    try:
-        response = completion(
-            model=model_name,
-            messages=messages,
-            stop=["stop"],
-            max_tokens=20,
-        )
-        # Add any assertions here to check the response
-        print(response)
-    except litellm.APIError as e:
-        pass
-    except litellm.RateLimitError as e:
-        pass
-    except Exception as e:
-        pytest.fail(f"Error occurred: {e}")
+    model_name = "watsonx_text/ibm/granite-13b-chat-v2"
+
+    response = completion(
+        model=model_name,
+        messages=messages,
+        stop=["stop"],
+        max_tokens=20,
+        stream=True,
+    )
+
+    for chunk in response:
+        print(chunk)
+    # Add any assertions here to check the response
+    print(response)
 
 
 @pytest.mark.skip(reason="Skip test. account deleted.")
@@ -4475,3 +4514,23 @@ def test_openai_hallucinated_tool_call_util(function_name, expect_modification):
     else:
         assert len(response) == 1
         assert response[0].function.name == function_name
+
+
+def test_langfuse_completion(monkeypatch):
+    monkeypatch.setenv(
+        "LANGFUSE_PUBLIC_KEY", "pk-lf-b3db7e8e-c2f6-4fc7-825c-a541a8fbe003"
+    )
+    monkeypatch.setenv(
+        "LANGFUSE_SECRET_KEY", "sk-lf-b11ef3a8-361c-4445-9652-12318b8596e4"
+    )
+    monkeypatch.setenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+    litellm.set_verbose = True
+    resp = litellm.completion(
+        model="langfuse/gpt-3.5-turbo",
+        langfuse_public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+        langfuse_secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+        langfuse_host="https://us.cloud.langfuse.com",
+        prompt_id="test-chat-prompt",
+        prompt_variables={"user_message": "this is used"},
+        messages=[{"role": "user", "content": "this is ignored"}],
+    )

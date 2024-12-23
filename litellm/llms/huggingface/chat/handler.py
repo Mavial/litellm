@@ -1,11 +1,6 @@
 ## Uses the huggingface text generation inference API
-import copy
-import enum
 import json
 import os
-import time
-import types
-from enum import Enum
 from typing import (
     Any,
     Callable,
@@ -20,10 +15,10 @@ from typing import (
 )
 
 import httpx
-import requests
 
 import litellm
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
     HTTPHandler,
@@ -33,14 +28,13 @@ from litellm.llms.custom_httpx.http_handler import (
 from litellm.llms.huggingface.chat.transformation import (
     HuggingfaceChatConfig as HuggingfaceConfig,
 )
-from litellm.secret_managers.main import get_secret_str
-from litellm.types.completion import ChatCompletionMessageToolCallParam
 from litellm.types.llms.openai import AllMessageValues
+from litellm.types.utils import EmbeddingResponse
 from litellm.types.utils import Logprobs as TextCompletionLogprobs
-from litellm.utils import Choices, CustomStreamWrapper, Message, ModelResponse, Usage
+from litellm.types.utils import ModelResponse
 
 from ...base import BaseLLM
-from ..common_utils import HuggingfaceError, hf_task_list, hf_tasks
+from ..common_utils import HuggingfaceError
 
 hf_chat_config = HuggingfaceConfig()
 
@@ -453,11 +447,11 @@ class Huggingface(BaseLLM):
     def _process_embedding_response(
         self,
         embeddings: dict,
-        model_response: litellm.EmbeddingResponse,
+        model_response: EmbeddingResponse,
         model: str,
         input: List,
         encoding: Any,
-    ) -> litellm.EmbeddingResponse:
+    ) -> EmbeddingResponse:
         output_data = []
         if "similarities" in embeddings:
             for idx, embedding in embeddings["similarities"]:
@@ -583,7 +577,7 @@ class Huggingface(BaseLLM):
         self,
         model: str,
         input: list,
-        model_response: litellm.EmbeddingResponse,
+        model_response: EmbeddingResponse,
         optional_params: dict,
         logging_obj: LiteLLMLoggingObj,
         encoding: Callable,
@@ -593,7 +587,7 @@ class Huggingface(BaseLLM):
         aembedding: Optional[bool] = None,
         client: Optional[Union[HTTPHandler, AsyncHTTPHandler]] = None,
         headers={},
-    ) -> litellm.EmbeddingResponse:
+    ) -> EmbeddingResponse:
         super().embedding()
         headers = hf_chat_config.validate_environment(
             api_key=api_key,

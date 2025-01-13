@@ -1163,13 +1163,18 @@ def test_completion_cost_azure_common_deployment_name():
         assert "azure/gpt-4" == mock_client.call_args.kwargs["base_model"]
 
 
-def test_completion_cost_anthropic_prompt_caching():
+@pytest.mark.parametrize(
+    "model, custom_llm_provider",
+    [
+        ("claude-3-5-sonnet-20240620", "anthropic"),
+        ("gemini/gemini-1.5-flash-001", "gemini"),
+    ],
+)
+def test_completion_cost_prompt_caching(model, custom_llm_provider):
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     litellm.model_cost = litellm.get_model_cost_map(url="")
 
     from litellm.utils import Choices, Message, ModelResponse, Usage
-
-    model = "anthropic/claude-3-5-sonnet-20240620"
 
     ## WRITE TO CACHE ## (MORE EXPENSIVE)
     response_1 = ModelResponse(
@@ -1187,7 +1192,7 @@ def test_completion_cost_anthropic_prompt_caching():
             )
         ],
         created=1725036547,
-        model="claude-3-5-sonnet-20240620",
+        model=model,
         object="chat.completion",
         system_fingerprint=None,
         usage=Usage(
@@ -1203,7 +1208,7 @@ def test_completion_cost_anthropic_prompt_caching():
     cost_1 = completion_cost(model=model, completion_response=response_1)
 
     _model_info = litellm.get_model_info(
-        model="claude-3-5-sonnet-20240620", custom_llm_provider="anthropic"
+        model=model, custom_llm_provider=custom_llm_provider
     )
     expected_cost = (
         (
@@ -1211,11 +1216,12 @@ def test_completion_cost_anthropic_prompt_caching():
             - response_1.usage.prompt_tokens_details.cached_tokens
         )
         * _model_info["input_cost_per_token"]
-        + response_1.usage.prompt_tokens_details.cached_tokens
+        + (response_1.usage.prompt_tokens_details.cached_tokens or 0)
         * _model_info["cache_read_input_token_cost"]
-        + response_1.usage.cache_creation_input_tokens
+        + (response_1.usage.cache_creation_input_tokens or 0)
         * _model_info["cache_creation_input_token_cost"]
-        + response_1.usage.completion_tokens * _model_info["output_cost_per_token"]
+        + (response_1.usage.completion_tokens or 0)
+        * _model_info["output_cost_per_token"]
     )  # Cost of processing (non-cache hit + cache hit) + Cost of cache-writing (cache writing)
 
     assert round(expected_cost, 5) == round(cost_1, 5)
@@ -1238,7 +1244,7 @@ def test_completion_cost_anthropic_prompt_caching():
             )
         ],
         created=1725036547,
-        model="claude-3-5-sonnet-20240620",
+        model=model,
         object="chat.completion",
         system_fingerprint=None,
         usage=Usage(
@@ -2437,7 +2443,7 @@ def test_completion_cost_params_2():
 def test_completion_cost_params_gemini_3():
     from litellm.utils import Choices, Message, ModelResponse, Usage
 
-    from litellm.litellm_core_utils.llm_cost_calc.google import cost_per_character
+    from litellm.llms.vertex_ai.cost_calculator import cost_per_character
 
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     litellm.model_cost = litellm.get_model_cost_map(url="")
@@ -2696,3 +2702,55 @@ def test_select_model_name_for_cost_calc():
 
     return_model = _select_model_name_for_cost_calc(**args)
     assert return_model == "azure_ai/mistral-large"
+
+
+def test_moderations():
+    from litellm import moderation
+
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+    litellm.add_known_models()
+
+    assert "omni-moderation-latest" in litellm.model_cost
+    print(
+        f"litellm.model_cost['omni-moderation-latest']: {litellm.model_cost['omni-moderation-latest']}"
+    )
+    assert "omni-moderation-latest" in litellm.open_ai_chat_completion_models
+
+    response = moderation("I am a bad person", model="omni-moderation-latest")
+    cost = completion_cost(response, model="omni-moderation-latest")
+    assert cost == 0
+
+
+def test_cost_calculator_azure_embedding():
+    from litellm.cost_calculator import response_cost_calculator
+    from litellm.types.utils import EmbeddingResponse, Usage
+
+    kwargs = {
+        "response_object": EmbeddingResponse(
+            model="text-embedding-3-small",
+            data=[{"embedding": [1, 2, 3]}],
+            usage=Usage(prompt_tokens=10, completion_tokens=10),
+        ),
+        "model": "text-embedding-3-small",
+        "cache_hit": None,
+        "custom_llm_provider": None,
+        "base_model": "azure/text-embedding-3-small",
+        "call_type": "aembedding",
+        "optional_params": {},
+        "custom_pricing": False,
+        "prompt": "Hello, world!",
+    }
+
+    try:
+        response_cost_calculator(**kwargs)
+    except Exception as e:
+        traceback.print_exc()
+        pytest.fail(f"Error: {e}")
+
+
+def test_add_known_models():
+    litellm.add_known_models()
+    assert (
+        "bedrock/us-west-1/meta.llama3-70b-instruct-v1:0" not in litellm.bedrock_models
+    )

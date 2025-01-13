@@ -472,11 +472,9 @@ class ProxyLogging:
         2. /embeddings
         3. /image/generation
         """
-        print_verbose("Inside Proxy Logging Pre-call hook!")
-        ### ALERTING ###
-        asyncio.create_task(
-            self.slack_alerting_instance.response_taking_too_long(request_data=data)
-        )
+        verbose_proxy_logger.debug("Inside Proxy Logging Pre-call hook!")
+
+        self._init_response_taking_too_long_task(data=data)
 
         if data is None:
             return None
@@ -517,6 +515,8 @@ class ProxyLogging:
                     _callback is not None
                     and isinstance(_callback, CustomLogger)
                     and "async_pre_call_hook" in vars(_callback.__class__)
+                    and _callback.__class__.async_pre_call_hook
+                    != CustomLogger.async_pre_call_hook
                 ):
                     response = await _callback.async_pre_call_hook(
                         user_api_key_dict=user_api_key_dict,
@@ -600,6 +600,7 @@ class ProxyLogging:
         type: Literal[
             "token_budget",
             "user_budget",
+            "soft_budget",
             "team_budget",
             "proxy_budget",
             "projected_limit_exceeded",
@@ -1009,6 +1010,23 @@ class ProxyLogging:
                 raise e
         return new_response
 
+    def _init_response_taking_too_long_task(self, data: Optional[dict] = None):
+        """
+        Initialize the response taking too long task if user is using slack alerting
+
+        Only run task if user is using slack alerting
+
+        This handles checking for if a request is hanging for too long
+        """
+        ## ALERTING ###
+        if (
+            self.slack_alerting_instance
+            and self.slack_alerting_instance.alerting is not None
+        ):
+            asyncio.create_task(
+                self.slack_alerting_instance.response_taking_too_long(request_data=data)
+            )
+
 
 ### DB CONNECTOR ###
 # Define the retry decorator with backoff strategy
@@ -1016,6 +1034,19 @@ class ProxyLogging:
 def on_backoff(details):
     # The 'tries' key in the details dictionary contains the number of completed tries
     print_verbose(f"Backing off... this was attempt #{details['tries']}")
+
+
+def jsonify_object(data: dict) -> dict:
+    db_data = copy.deepcopy(data)
+
+    for k, v in db_data.items():
+        if isinstance(v, dict):
+            try:
+                db_data[k] = json.dumps(v)
+            except Exception:
+                # This avoids Prisma retrying this 5 times, and making 5 clients
+                db_data[k] = "failed-to-serialize-json"
+    return db_data
 
 
 class PrismaClient:
@@ -1503,25 +1534,32 @@ class PrismaClient:
                         )
 
                     sql_query = f"""
-                    SELECT 
-                    v.*,
-                    t.spend AS team_spend, 
-                    t.max_budget AS team_max_budget, 
-                    t.tpm_limit AS team_tpm_limit,
-                    t.rpm_limit AS team_rpm_limit,
-                    t.models AS team_models,
-                    t.metadata AS team_metadata,
-                    t.blocked AS team_blocked,
-                    t.team_alias AS team_alias,
-                    t.metadata AS team_metadata,
-                    t.members_with_roles AS team_members_with_roles,
-                    tm.spend AS team_member_spend,
-                    m.aliases as team_model_aliases
-                    FROM "LiteLLM_VerificationToken" AS v
-                    LEFT JOIN "LiteLLM_TeamTable" AS t ON v.team_id = t.team_id
-                    LEFT JOIN "LiteLLM_TeamMembership" AS tm ON v.team_id = tm.team_id AND tm.user_id = v.user_id
-                    LEFT JOIN "LiteLLM_ModelTable" m ON t.model_id = m.id
-                    WHERE v.token = '{token}'
+                        SELECT 
+                            v.*,
+                            t.spend AS team_spend, 
+                            t.max_budget AS team_max_budget, 
+                            t.tpm_limit AS team_tpm_limit,
+                            t.rpm_limit AS team_rpm_limit,
+                            t.models AS team_models,
+                            t.metadata AS team_metadata,
+                            t.blocked AS team_blocked,
+                            t.team_alias AS team_alias,
+                            t.metadata AS team_metadata,
+                            t.members_with_roles AS team_members_with_roles,
+                            tm.spend AS team_member_spend,
+                            m.aliases AS team_model_aliases,
+                            -- Added comma to separate b.* columns
+                            b.max_budget AS litellm_budget_table_max_budget,
+                            b.tpm_limit AS litellm_budget_table_tpm_limit,
+                            b.rpm_limit AS litellm_budget_table_rpm_limit,
+                            b.model_max_budget as litellm_budget_table_model_max_budget,
+                            b.soft_budget as litellm_budget_table_soft_budget
+                        FROM "LiteLLM_VerificationToken" AS v
+                        LEFT JOIN "LiteLLM_TeamTable" AS t ON v.team_id = t.team_id
+                        LEFT JOIN "LiteLLM_TeamMembership" AS tm ON v.team_id = tm.team_id AND tm.user_id = v.user_id
+                        LEFT JOIN "LiteLLM_ModelTable" m ON t.model_id = m.id
+                        LEFT JOIN "LiteLLM_BudgetTable" AS b ON v.budget_id = b.budget_id
+                        WHERE v.token = '{token}'
                     """
 
                     print_verbose("sql_query being made={}".format(sql_query))
@@ -1634,6 +1672,7 @@ class PrismaClient:
                         "create": {**db_data},  # type: ignore
                         "update": {},  # don't do anything if it already exists
                     },
+                    include={"litellm_budget_table": True},
                 )
                 verbose_proxy_logger.info("Data Inserted into Keys Table")
                 return new_verification_token

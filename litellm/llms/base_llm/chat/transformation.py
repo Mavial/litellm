@@ -73,7 +73,7 @@ class BaseConfig(ABC):
 
     def should_fake_stream(
         self,
-        model: str,
+        model: Optional[str],
         stream: Optional[bool],
         custom_llm_provider: Optional[str] = None,
     ) -> bool:
@@ -81,6 +81,33 @@ class BaseConfig(ABC):
         Returns True if the model/provider should fake stream
         """
         return False
+
+    def should_retry_llm_api_inside_llm_translation_on_http_error(
+        self, e: httpx.HTTPStatusError, litellm_params: dict
+    ) -> bool:
+        """
+        Returns True if the model/provider should retry the LLM API on UnprocessableEntityError
+
+        Overriden by azure ai - where different models support different parameters
+        """
+        return False
+
+    def transform_request_on_unprocessable_entity_error(
+        self, e: httpx.HTTPStatusError, request_data: dict
+    ) -> dict:
+        """
+        Transform the request data on UnprocessableEntityError
+        """
+        return request_data
+
+    @property
+    def max_retry_on_unprocessable_entity_error(self) -> int:
+        """
+        Returns the max retry count for UnprocessableEntityError
+
+        Used if `should_retry_llm_api_inside_llm_translation_on_http_error` is True
+        """
+        return 0
 
     @abstractmethod
     def get_supported_openai_params(self, model: str) -> list:
@@ -104,6 +131,7 @@ class BaseConfig(ABC):
         messages: List[AllMessageValues],
         optional_params: dict,
         api_key: Optional[str] = None,
+        api_base: Optional[str] = None,
     ) -> dict:
         pass
 

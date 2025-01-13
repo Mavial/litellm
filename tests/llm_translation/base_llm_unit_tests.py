@@ -5,6 +5,7 @@ import sys
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, Mock, patch
 import os
+import uuid
 
 sys.path.insert(
     0, os.path.abspath("../..")
@@ -45,6 +46,7 @@ def _usage_format_tests(usage: litellm.Usage):
     }
     ```
     """
+    print(f"usage={usage}")
     assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens
 
     assert usage.prompt_tokens > usage.prompt_tokens_details.cached_tokens
@@ -88,6 +90,40 @@ class BaseLLMChatTest(ABC):
 
         # for OpenAI the content contains the JSON schema, so we need to assert that the content is not None
         assert response.choices[0].message.content is not None
+
+    def test_streaming(self):
+        """Check if litellm handles streaming correctly"""
+        base_completion_call_args = self.get_base_completion_call_args()
+        litellm.set_verbose = True
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Hello, how are you?"}],
+            }
+        ]
+        try:
+            response = self.completion_function(
+                **base_completion_call_args,
+                messages=messages,
+                stream=True,
+            )
+            assert response is not None
+            assert isinstance(response, CustomStreamWrapper)
+        except litellm.InternalServerError:
+            pytest.skip("Model is overloaded")
+
+        # for OpenAI the content contains the JSON schema, so we need to assert that the content is not None
+        chunks = []
+        for chunk in response:
+            print(chunk)
+            chunks.append(chunk)
+
+        resp = litellm.stream_chunk_builder(chunks=chunks)
+        print(resp)
+
+        # assert resp.usage.prompt_tokens > 0
+        # assert resp.usage.completion_tokens > 0
+        # assert resp.usage.total_tokens > 0
 
     def test_pydantic_model_input(self):
         litellm.set_verbose = True
@@ -152,8 +188,13 @@ class BaseLLMChatTest(ABC):
         """
         Test that the JSON response format is supported by the LLM API
         """
+        from litellm.utils import supports_response_schema
+
         base_completion_call_args = self.get_base_completion_call_args()
         litellm.set_verbose = True
+
+        if not supports_response_schema(base_completion_call_args["model"], None):
+            pytest.skip("Model does not support response schema")
 
         messages = [
             {
@@ -223,8 +264,14 @@ class BaseLLMChatTest(ABC):
         """
         Test that the JSON response format with streaming is supported by the LLM API
         """
+        from litellm.utils import supports_response_schema
+
         base_completion_call_args = self.get_base_completion_call_args()
         litellm.set_verbose = True
+
+        base_completion_call_args = self.get_base_completion_call_args()
+        if not supports_response_schema(base_completion_call_args["model"], None):
+            pytest.skip("Model does not support response schema")
 
         messages = [
             {
@@ -342,54 +389,75 @@ class BaseLLMChatTest(ABC):
             print("Model does not support prompt caching")
             pytest.skip("Model does not support prompt caching")
 
-        try:
-            for _ in range(2):
-                response = self.completion_function(
-                    **base_completion_call_args,
-                    messages=[
-                        # System Message
-                        {
-                            "role": "system",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Here is the full text of a complex legal agreement"
-                                    * 400,
-                                    "cache_control": {"type": "ephemeral"},
-                                }
-                            ],
-                        },
-                        # marked for caching with the cache_control parameter, so that this checkpoint can read from the previous cache.
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "What are the key terms and conditions in this agreement?",
-                                    "cache_control": {"type": "ephemeral"},
-                                }
-                            ],
-                        },
-                        {
-                            "role": "assistant",
-                            "content": "Certainly! the key terms and conditions are the following: the contract is 1 year long for $10/mo",
-                        },
-                        # The final turn is marked with cache-control, for continuing in followups.
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "What are the key terms and conditions in this agreement?",
-                                    "cache_control": {"type": "ephemeral"},
-                                }
-                            ],
-                        },
-                    ],
-                    max_tokens=10,
-                )
+        uuid_str = str(uuid.uuid4())
+        messages = [
+            # System Message
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Here is the full text of a complex legal agreement {}".format(
+                            uuid_str
+                        )
+                        * 400,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            # marked for caching with the cache_control parameter, so that this checkpoint can read from the previous cache.
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What are the key terms and conditions in this agreement?",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Certainly! the key terms and conditions are the following: the contract is 1 year long for $10/mo",
+            },
+            # The final turn is marked with cache-control, for continuing in followups.
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "What are the key terms and conditions in this agreement?",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ]
 
-                _usage_format_tests(response.usage)
+        try:
+            ## call 1
+            response = self.completion_function(
+                **base_completion_call_args,
+                messages=messages,
+                max_tokens=10,
+            )
+
+            initial_cost = response._hidden_params["response_cost"]
+            ## call 2
+            response = self.completion_function(
+                **base_completion_call_args,
+                messages=messages,
+                max_tokens=10,
+            )
+
+            cached_cost = response._hidden_params["response_cost"]
+
+            assert (
+                cached_cost <= initial_cost
+            ), "Cached cost={} should be less than initial cost={}".format(
+                cached_cost, initial_cost
+            )
+
+            _usage_format_tests(response.usage)
 
             print("response=", response)
             print("response.usage=", response.usage)

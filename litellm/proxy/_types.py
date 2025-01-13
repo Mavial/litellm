@@ -12,6 +12,7 @@ from litellm.types.integrations.slack_alerting import AlertType
 from litellm.types.router import RouterErrors, UpdateRouterConfig
 from litellm.types.utils import (
     EmbeddingResponse,
+    GenericBudgetConfigType,
     ImageResponse,
     LiteLLMPydanticObjectBase,
     ModelResponse,
@@ -228,6 +229,11 @@ class LiteLLMRoutes(enum.Enum):
         # rerank
         "/rerank",
         "/v1/rerank",
+        # realtime
+        "/realtime",
+        "/v1/realtime",
+        "/realtime?{model}",
+        "/v1/realtime?{model}",
     ]
 
     mapped_pass_through_routes = [
@@ -306,16 +312,18 @@ class LiteLLMRoutes(enum.Enum):
         "/global/spend/provider",
     ]
 
-    public_routes = [
-        "/routes",
-        "/",
-        "/health/liveliness",
-        "/health/liveness",
-        "/health/readiness",
-        "/test",
-        "/config/yaml",
-        "/metrics",
-    ]
+    public_routes = set(
+        [
+            "/routes",
+            "/",
+            "/health/liveliness",
+            "/health/liveness",
+            "/health/readiness",
+            "/test",
+            "/config/yaml",
+            "/metrics",
+        ]
+    )
 
     ui_routes = [
         "/sso",
@@ -419,6 +427,8 @@ class LiteLLM_JWTAuth(LiteLLMPydanticObjectBase):
         "info_routes",
     ]
     team_id_jwt_field: Optional[str] = None
+    team_ids_jwt_field: Optional[str] = None
+    upsert_sso_user_to_team: bool = False
     team_allowed_routes: List[
         Literal["openai_routes", "info_routes", "management_routes"]
     ] = ["openai_routes", "info_routes"]
@@ -614,7 +624,6 @@ class GenerateRequestBase(LiteLLMPydanticObjectBase):
     rpm_limit: Optional[int] = None
     budget_duration: Optional[str] = None
     allowed_cache_controls: Optional[list] = []
-    soft_budget: Optional[float] = None
     config: Optional[dict] = {}
     permissions: Optional[dict] = {}
     model_max_budget: Optional[dict] = (
@@ -622,7 +631,6 @@ class GenerateRequestBase(LiteLLMPydanticObjectBase):
     )  # {"gpt-4": 5.0, "gpt-3.5-turbo": 5.0}, defaults to {}
 
     model_config = ConfigDict(protected_namespaces=())
-    send_invite_email: Optional[bool] = None
     model_rpm_limit: Optional[dict] = None
     model_tpm_limit: Optional[dict] = None
     guardrails: Optional[List[str]] = None
@@ -630,21 +638,25 @@ class GenerateRequestBase(LiteLLMPydanticObjectBase):
     aliases: Optional[dict] = {}
 
 
-class _GenerateKeyRequest(GenerateRequestBase):
+class KeyRequestBase(GenerateRequestBase):
     key: Optional[str] = None
-
-
-class GenerateKeyRequest(_GenerateKeyRequest):
+    budget_id: Optional[str] = None
     tags: Optional[List[str]] = None
     enforced_params: Optional[List[str]] = None
 
 
-class GenerateKeyResponse(_GenerateKeyRequest):
+class GenerateKeyRequest(KeyRequestBase):
+    soft_budget: Optional[float] = None
+    send_invite_email: Optional[bool] = None
+
+
+class GenerateKeyResponse(KeyRequestBase):
     key: str  # type: ignore
     key_name: Optional[str] = None
     expires: Optional[datetime]
     user_id: Optional[str] = None
     token_id: Optional[str] = None
+    litellm_budget_table: Optional[Any] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -669,7 +681,7 @@ class GenerateKeyResponse(_GenerateKeyRequest):
         return values
 
 
-class UpdateKeyRequest(GenerateKeyRequest):
+class UpdateKeyRequest(KeyRequestBase):
     # Note: the defaults of all Params here MUST BE NONE
     # else they will get overwritten
     key: str  # type: ignore
@@ -687,7 +699,17 @@ class RegenerateKeyRequest(GenerateKeyRequest):
 
 
 class KeyRequest(LiteLLMPydanticObjectBase):
-    keys: List[str]
+    keys: Optional[List[str]] = None
+    key_aliases: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_at_least_one(cls, values):
+        if not values.get("keys") and not values.get("key_aliases"):
+            raise ValueError(
+                "At least one of 'keys' or 'key_aliases' must be provided."
+            )
+        return values
 
 
 class LiteLLM_ModelTable(LiteLLMPydanticObjectBase):
@@ -765,7 +787,7 @@ class DeleteUserRequest(LiteLLMPydanticObjectBase):
 AllowedModelRegion = Literal["eu", "us"]
 
 
-class BudgetNew(LiteLLMPydanticObjectBase):
+class BudgetNewRequest(LiteLLMPydanticObjectBase):
     budget_id: Optional[str] = Field(default=None, description="The unique budget id.")
     max_budget: Optional[float] = Field(
         default=None,
@@ -788,6 +810,10 @@ class BudgetNew(LiteLLMPydanticObjectBase):
         default=None,
         description="Max duration budget should be set for (e.g. '1hr', '1d', '28d')",
     )
+    model_max_budget: Optional[GenericBudgetConfigType] = Field(
+        default=None,
+        description="Max budget for each model (e.g. {'gpt-4o': {'max_budget': '0.0000001', 'budget_duration': '1d', 'tpm_limit': 1000, 'rpm_limit': 1000}})",
+    )
 
 
 class BudgetRequest(LiteLLMPydanticObjectBase):
@@ -805,11 +831,11 @@ class CustomerBase(LiteLLMPydanticObjectBase):
     allowed_model_region: Optional[AllowedModelRegion] = None
     default_model: Optional[str] = None
     budget_id: Optional[str] = None
-    litellm_budget_table: Optional[BudgetNew] = None
+    litellm_budget_table: Optional[BudgetNewRequest] = None
     blocked: bool = False
 
 
-class NewCustomerRequest(BudgetNew):
+class NewCustomerRequest(BudgetNewRequest):
     """
     Create a new customer, allocate a budget to them
     """
@@ -1011,13 +1037,29 @@ class TeamCallbackMetadata(LiteLLMPydanticObjectBase):
     @model_validator(mode="before")
     @classmethod
     def validate_callback_vars(cls, values):
+        success_callback = values.get("success_callback", [])
+        if success_callback is None:
+            values.pop("success_callback", None)
+        failure_callback = values.get("failure_callback", [])
+        if failure_callback is None:
+            values.pop("failure_callback", None)
+
         callback_vars = values.get("callback_vars", {})
+        if callback_vars is None:
+            values.pop("callback_vars", None)
+        if all(val is None for val in values.values()):
+            return {
+                "success_callback": [],
+                "failure_callback": [],
+                "callback_vars": {},
+            }
         valid_keys = set(StandardCallbackDynamicParams.__annotations__.keys())
-        for key in callback_vars:
-            if key not in valid_keys:
-                raise ValueError(
-                    f"Invalid callback variable: {key}. Must be one of {valid_keys}"
-                )
+        if callback_vars is not None:
+            for key in callback_vars:
+                if key not in valid_keys:
+                    raise ValueError(
+                        f"Invalid callback variable: {key}. Must be one of {valid_keys}"
+                    )
         return values
 
 
@@ -1123,6 +1165,7 @@ class KeyManagementSystem(enum.Enum):
     AZURE_KEY_VAULT = "azure_key_vault"
     AWS_SECRET_MANAGER = "aws_secret_manager"
     GOOGLE_SECRET_MANAGER = "google_secret_manager"
+    HASHICORP_VAULT = "hashicorp_vault"
     LOCAL = "local"
     AWS_KMS = "aws_kms"
 
@@ -1410,6 +1453,19 @@ class LiteLLM_VerificationTokenView(LiteLLM_VerificationToken):
     # Time stamps
     last_refreshed_at: Optional[float] = None  # last time joint view was pulled from db
 
+    def __init__(self, **kwargs):
+        # Handle litellm_budget_table_* keys
+        for key, value in list(kwargs.items()):
+            if key.startswith("litellm_budget_table_") and value is not None:
+                # Extract the corresponding attribute name
+                attr_name = key.replace("litellm_budget_table_", "")
+                # Check if the value is None and set the corresponding attribute
+                if getattr(self, attr_name, None) is None:
+                    kwargs[attr_name] = value
+
+        # Initialize the superclass
+        super().__init__(**kwargs)
+
 
 class UserAPIKeyAuth(
     LiteLLM_VerificationTokenView
@@ -1590,6 +1646,7 @@ class CallInfo(LiteLLMPydanticObjectBase):
 
     spend: float
     max_budget: Optional[float] = None
+    soft_budget: Optional[float] = None
     token: Optional[str] = Field(default=None, description="Hashed value of that key")
     customer_id: Optional[str] = None
     user_id: Optional[str] = None
@@ -1604,6 +1661,7 @@ class CallInfo(LiteLLMPydanticObjectBase):
 class WebhookEvent(CallInfo):
     event: Literal[
         "budget_crossed",
+        "soft_budget_crossed",
         "threshold_crossed",
         "projected_limit_exceeded",
         "key_created",
@@ -2022,12 +2080,13 @@ class TeamMemberDeleteRequest(MemberDeleteRequest):
 
 
 class TeamMemberUpdateRequest(TeamMemberDeleteRequest):
-    max_budget_in_team: float
+    max_budget_in_team: Optional[float] = None
+    role: Optional[Literal["admin", "user"]] = None
 
 
 class TeamMemberUpdateResponse(MemberUpdateResponse):
     team_id: str
-    max_budget_in_team: float
+    max_budget_in_team: Optional[float] = None
 
 
 # Organization Member Requests
@@ -2178,9 +2237,9 @@ class ProviderBudgetResponseObject(LiteLLMPydanticObjectBase):
     Configuration for a single provider's budget settings
     """
 
-    budget_limit: float  # Budget limit in USD for the time period
-    time_period: str  # Time period for budget (e.g., '1d', '30d', '1mo')
-    spend: float = 0.0  # Current spend for this provider
+    budget_limit: Optional[float]  # Budget limit in USD for the time period
+    time_period: Optional[str]  # Time period for budget (e.g., '1d', '30d', '1mo')
+    spend: Optional[float] = 0.0  # Current spend for this provider
     budget_reset_at: Optional[str] = None  # When the current budget period resets
 
 
@@ -2201,3 +2260,6 @@ class ProxyStateVariables(TypedDict):
     """
 
     spend_logs_row_count: int
+
+
+UI_TEAM_ID = "litellm-dashboard"

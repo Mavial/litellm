@@ -657,6 +657,7 @@ class GenerateKeyResponse(KeyRequestBase):
     user_id: Optional[str] = None
     token_id: Optional[str] = None
     litellm_budget_table: Optional[Any] = None
+    token: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -688,6 +689,17 @@ class UpdateKeyRequest(KeyRequestBase):
     duration: Optional[str] = None
     spend: Optional[float] = None
     metadata: Optional[dict] = None
+    temp_budget_increase: Optional[float] = None
+    temp_budget_expiry: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_temp_budget(self) -> "UpdateKeyRequest":
+        if self.temp_budget_increase is not None or self.temp_budget_expiry is not None:
+            if self.temp_budget_increase is None or self.temp_budget_expiry is None:
+                raise ValueError(
+                    "temp_budget_increase and temp_budget_expiry must be set together"
+                )
+        return self
 
 
 class RegenerateKeyRequest(GenerateKeyRequest):
@@ -1591,6 +1603,8 @@ class LiteLLM_SpendLogs(LiteLLMPydanticObjectBase):
     cache_key: Optional[str] = None
     request_tags: Optional[Json] = None
     requester_ip_address: Optional[str] = None
+    messages: Optional[Union[str, list, dict]]
+    response: Optional[Union[str, list, dict]]
 
 
 class LiteLLM_ErrorLogs(LiteLLMPydanticObjectBase):
@@ -1841,6 +1855,8 @@ class SpendLogsPayload(TypedDict):
     end_user: Optional[str]
     requester_ip_address: Optional[str]
     custom_llm_provider: Optional[str]
+    messages: Optional[Union[str, list, dict]]
+    response: Optional[Union[str, list, dict]]
 
 
 class SpanAttributes(str, enum.Enum):
@@ -2229,6 +2245,8 @@ LiteLLM_ManagementEndpoint_MetadataFields = [
     "guardrails",
     "tags",
     "enforced_params",
+    "temp_budget_increase",
+    "temp_budget_expiry",
 ]
 
 

@@ -12,6 +12,7 @@ import time
 import traceback
 import uuid
 from datetime import datetime as dt_object
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel
@@ -835,7 +836,7 @@ class Logging(LiteLLMLoggingBaseClass):
         except Exception as e:  # error calculating cost
             debug_info = StandardLoggingModelCostFailureDebugInformation(
                 error_str=str(e),
-                traceback_str=traceback.format_exc(),
+                traceback_str=_get_traceback_str_for_error(str(e)),
                 model=response_cost_calculator_kwargs["model"],
                 cache_hit=response_cost_calculator_kwargs["cache_hit"],
                 custom_llm_provider=response_cost_calculator_kwargs[
@@ -3100,7 +3101,7 @@ def get_standard_logging_object_payload(
         # standardize this function to be used across, s3, dynamoDB, langfuse logging
         litellm_params = kwargs.get("litellm_params", {})
         proxy_server_request = litellm_params.get("proxy_server_request") or {}
-        end_user_id = proxy_server_request.get("body", {}).get("user", None)
+
         metadata: dict = (
             litellm_params.get("litellm_metadata")
             or litellm_params.get("metadata", None)
@@ -3147,6 +3148,11 @@ def get_standard_logging_object_payload(
             litellm_params=litellm_params,
             prompt_integration=kwargs.get("prompt_integration", None),
         )
+
+        _request_body = proxy_server_request.get("body", {})
+        end_user_id = clean_metadata["user_api_key_end_user_id"] or _request_body.get(
+            "user", None
+        )  # maintain backwards compatibility with old request body check
 
         saved_cache_cost: float = 0.0
         if cache_hit is True:
@@ -3320,3 +3326,11 @@ def modify_integration(integration_name, integration_params):
     if integration_name == "supabase":
         if "table_name" in integration_params:
             Supabase.supabase_table_name = integration_params["table_name"]
+
+
+@lru_cache(maxsize=16)
+def _get_traceback_str_for_error(error_str: str) -> str:
+    """
+    function wrapped with lru_cache to limit the number of times `traceback.format_exc()` is called
+    """
+    return traceback.format_exc()

@@ -46,6 +46,7 @@ from litellm import get_secret_str
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache, InMemoryCache, RedisCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
 from litellm.router_strategy.budget_limiter import RouterBudgetLimiting
@@ -809,6 +810,7 @@ class Router:
             kwargs["messages"] = messages
             kwargs["stream"] = stream
             kwargs["original_function"] = self._acompletion
+
             self._update_kwargs_before_fallbacks(model=model, kwargs=kwargs)
             request_priority = kwargs.get("priority") or self.default_priority
             start_time = time.time()
@@ -890,8 +892,8 @@ class Router:
                 deployment=deployment, parent_otel_span=parent_otel_span
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
-
             data = deployment["litellm_params"].copy()
+
             model_name = data["model"]
 
             model_client = self._get_async_openai_model_client(
@@ -2789,9 +2791,12 @@ class Router:
                 content_policy_fallbacks=content_policy_fallbacks,
             )
 
-            response = await self.async_function_with_retries(
-                *args, **kwargs, mock_timeout=mock_timeout
-            )
+            if mock_timeout is not None:
+                response = await self.async_function_with_retries(
+                    *args, **kwargs, mock_timeout=mock_timeout
+                )
+            else:
+                response = await self.async_function_with_retries(*args, **kwargs)
             verbose_router_logger.debug(f"Async Response: {response}")
             return response
         except Exception as e:
@@ -3264,32 +3269,7 @@ class Router:
 
         Wrapped to reduce code duplication and prevent bugs.
         """
-        from concurrent.futures import ThreadPoolExecutor
-
-        def run_in_new_loop():
-            """Run the coroutine in a new event loop within this thread."""
-            new_loop = asyncio.new_event_loop()
-            try:
-                asyncio.set_event_loop(new_loop)
-                return new_loop.run_until_complete(
-                    self.async_function_with_fallbacks(*args, **kwargs)
-                )
-            finally:
-                new_loop.close()
-                asyncio.set_event_loop(None)
-
-        try:
-            # First, try to get the current event loop
-            _ = asyncio.get_running_loop()
-            # If we're already in an event loop, run in a separate thread
-            # to avoid nested event loop issues
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_new_loop)
-                return future.result()
-
-        except RuntimeError:
-            # No running event loop, we can safely run in this thread
-            return run_in_new_loop()
+        return run_async_function(self.async_function_with_fallbacks, *args, **kwargs)
 
     def _get_fallback_model_group_from_fallbacks(
         self,
@@ -3640,66 +3620,6 @@ class Router:
             )  # don't change existing ttl
 
         return request_count
-
-    def _is_cooldown_required(
-        self,
-        model_id: str,
-        exception_status: Union[str, int],
-        exception_str: Optional[str] = None,
-    ) -> bool:
-        """
-        A function to determine if a cooldown is required based on the exception status.
-
-        Parameters:
-            model_id (str) The id of the model in the model list
-            exception_status (Union[str, int]): The status of the exception.
-
-        Returns:
-            bool: True if a cooldown is required, False otherwise.
-        """
-        ## BASE CASE - single deployment
-        model_group = self.get_model_group(id=model_id)
-        if model_group is not None and len(model_group) == 1:
-            return False
-
-        try:
-            ignored_strings = ["APIConnectionError"]
-            if (
-                exception_str is not None
-            ):  # don't cooldown on litellm api connection errors errors
-                for ignored_string in ignored_strings:
-                    if ignored_string in exception_str:
-                        return False
-
-            if isinstance(exception_status, str):
-                exception_status = int(exception_status)
-
-            if exception_status >= 400 and exception_status < 500:
-                if exception_status == 429:
-                    # Cool down 429 Rate Limit Errors
-                    return True
-
-                elif exception_status == 401:
-                    # Cool down 401 Auth Errors
-                    return True
-
-                elif exception_status == 408:
-                    return True
-
-                elif exception_status == 404:
-                    return True
-
-                else:
-                    # Do NOT cool down all other 4XX Errors
-                    return False
-
-            else:
-                # should cool down for all other errors
-                return True
-
-        except Exception:
-            # Catch all - if any exceptions default to cooling down
-            return True
 
     def _has_default_fallbacks(self) -> bool:
         if self.fallbacks is None:

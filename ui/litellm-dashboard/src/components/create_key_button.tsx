@@ -23,6 +23,7 @@ import {
   message,
   Radio,
 } from "antd";
+import { unfurlWildcardModelsInList, getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
 import {
   keyCreateCall,
   slackBudgetAlertsHealthCheck,
@@ -80,8 +81,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [apiKey, setApiKey] = useState(null);
   const [softBudget, setSoftBudget] = useState(null);
-  const [userModels, setUserModels] = useState([]);
-  const [modelsToPick, setModelsToPick] = useState([]);
+  const [userModels, setUserModels] = useState<string[]>([]);
+  const [modelsToPick, setModelsToPick] = useState<string[]>([]);
   const [keyOwner, setKeyOwner] = useState("you");
   const [predefinedTags, setPredefinedTags] = useState(getPredefinedTags(data));
   const [guardrailsList, setGuardrailsList] = useState<string[]>([]);
@@ -158,7 +159,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({
 
       message.info("Making API Call");
       setIsModalVisible(true);
-
+      
+      if(keyOwner === "you"){
+        formValues.user_id = userID 
+      }
       // If it's a service account, add the service_account_id to the metadata
       if (keyOwner === "service_account") {
         // Parse existing metadata or create an empty object
@@ -212,6 +216,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({
       // no team set, show all available models
       tempModelsToPick = userModels;
     }
+
+    tempModelsToPick = unfurlWildcardModelsInList(tempModelsToPick, userModels);
 
     setModelsToPick(tempModelsToPick);
   }, [team, userModels]);
@@ -310,7 +316,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({
                 </Option>
                 {modelsToPick.map((model: string) => (
                   <Option key={model} value={model}>
-                    {model}
+                    {getModelDisplayName(model)}
                   </Option>
                 ))}
               </Select>

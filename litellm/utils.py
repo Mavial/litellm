@@ -150,6 +150,7 @@ from litellm.types.utils import (
     ModelResponseStream,
     ProviderField,
     ProviderSpecificModelInfo,
+    SelectTokenizerResponse,
     StreamingChoices,
     TextChoices,
     TextCompletionResponse,
@@ -165,7 +166,6 @@ with resources.open_text(
 # Convert to str (if necessary)
 claude_json_str = json.dumps(json_data)
 import importlib.metadata
-from concurrent.futures import ThreadPoolExecutor
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -184,6 +184,7 @@ from typing import (
 
 from openai import OpenAIError as OriginalError
 
+from litellm.litellm_core_utils.thread_pool_executor import executor
 from litellm.llms.base_llm.audio_transcription.transformation import (
     BaseAudioTranscriptionConfig,
 )
@@ -234,10 +235,6 @@ from .types.router import LiteLLM_Params
 
 ####### ENVIRONMENT VARIABLES ####################
 # Adjust to your specific application needs / system capabilities.
-MAX_THREADS = 100
-
-# Create a ThreadPoolExecutor
-executor = ThreadPoolExecutor(max_workers=MAX_THREADS)
 sentry_sdk_instance = None
 capture_exception = None
 add_breadcrumb = None
@@ -346,13 +343,18 @@ def _add_custom_logger_callback_to_specific_event(
         llm_router=None,
     )
 
-    # don't double add a callback
-    if callback_class is not None and not any(
-        isinstance(cb, type(callback_class)) for cb in litellm.callbacks  # type: ignore
-    ):
-        if logging_event == "success":
-            litellm.success_callback.append(callback_class)
-            litellm._async_success_callback.append(callback_class)
+    if callback_class:
+        if (
+            logging_event == "success"
+            and _custom_logger_class_exists_in_success_callbacks(callback_class)
+            is False
+        ):
+            litellm.logging_callback_manager.add_litellm_success_callback(
+                callback_class
+            )
+            litellm.logging_callback_manager.add_litellm_async_success_callback(
+                callback_class
+            )
             if callback in litellm.success_callback:
                 litellm.success_callback.remove(
                     callback
@@ -361,9 +363,17 @@ def _add_custom_logger_callback_to_specific_event(
                 litellm._async_success_callback.remove(
                     callback
                 )  # remove the string from the callback list
-        elif logging_event == "failure":
-            litellm.failure_callback.append(callback_class)
-            litellm._async_failure_callback.append(callback_class)
+        elif (
+            logging_event == "failure"
+            and _custom_logger_class_exists_in_failure_callbacks(callback_class)
+            is False
+        ):
+            litellm.logging_callback_manager.add_litellm_failure_callback(
+                callback_class
+            )
+            litellm.logging_callback_manager.add_litellm_async_failure_callback(
+                callback_class
+            )
             if callback in litellm.failure_callback:
                 litellm.failure_callback.remove(
                     callback
@@ -372,6 +382,38 @@ def _add_custom_logger_callback_to_specific_event(
                 litellm._async_failure_callback.remove(
                     callback
                 )  # remove the string from the callback list
+
+
+def _custom_logger_class_exists_in_success_callbacks(
+    callback_class: CustomLogger,
+) -> bool:
+    """
+    Returns True if an instance of the custom logger exists in litellm.success_callback or litellm._async_success_callback
+
+    e.g if `LangfusePromptManagement` is passed in, it will return True if an instance of `LangfusePromptManagement` exists in litellm.success_callback or litellm._async_success_callback
+
+    Prevents double adding a custom logger callback to the litellm callbacks
+    """
+    return any(
+        isinstance(cb, type(callback_class))
+        for cb in litellm.success_callback + litellm._async_success_callback
+    )
+
+
+def _custom_logger_class_exists_in_failure_callbacks(
+    callback_class: CustomLogger,
+) -> bool:
+    """
+    Returns True if an instance of the custom logger exists in litellm.failure_callback or litellm._async_failure_callback
+
+    e.g if `LangfusePromptManagement` is passed in, it will return True if an instance of `LangfusePromptManagement` exists in litellm.failure_callback or litellm._async_failure_callback
+
+    Prevents double adding a custom logger callback to the litellm callbacks
+    """
+    return any(
+        isinstance(cb, type(callback_class))
+        for cb in litellm.failure_callback + litellm._async_failure_callback
+    )
 
 
 def function_setup(  # noqa: PLR0915
@@ -410,13 +452,13 @@ def function_setup(  # noqa: PLR0915
                 if callback not in litellm.input_callback:
                     litellm.input_callback.append(callback)  # type: ignore
                 if callback not in litellm.success_callback:
-                    litellm.success_callback.append(callback)  # type: ignore
+                    litellm.logging_callback_manager.add_litellm_success_callback(callback)  # type: ignore
                 if callback not in litellm.failure_callback:
-                    litellm.failure_callback.append(callback)  # type: ignore
+                    litellm.logging_callback_manager.add_litellm_failure_callback(callback)  # type: ignore
                 if callback not in litellm._async_success_callback:
-                    litellm._async_success_callback.append(callback)  # type: ignore
+                    litellm.logging_callback_manager.add_litellm_async_success_callback(callback)  # type: ignore
                 if callback not in litellm._async_failure_callback:
-                    litellm._async_failure_callback.append(callback)  # type: ignore
+                    litellm.logging_callback_manager.add_litellm_async_failure_callback(callback)  # type: ignore
             print_verbose(
                 f"Initialized litellm callbacks, Async Success Callbacks: {litellm._async_success_callback}"
             )
@@ -451,12 +493,16 @@ def function_setup(  # noqa: PLR0915
             removed_async_items = []
             for index, callback in enumerate(litellm.success_callback):  # type: ignore
                 if inspect.iscoroutinefunction(callback):
-                    litellm._async_success_callback.append(callback)
+                    litellm.logging_callback_manager.add_litellm_async_success_callback(
+                        callback
+                    )
                     removed_async_items.append(index)
                 elif callback == "dynamodb" or callback == "openmeter":
                     # dynamo is an async callback, it's used for the proxy and needs to be async
                     # we only support async dynamo db logging for acompletion/aembedding since that's used on proxy
-                    litellm._async_success_callback.append(callback)
+                    litellm.logging_callback_manager.add_litellm_async_success_callback(
+                        callback
+                    )
                     removed_async_items.append(index)
                 elif (
                     callback in litellm._known_custom_logger_compatible_callbacks
@@ -472,8 +518,15 @@ def function_setup(  # noqa: PLR0915
             removed_async_items = []
             for index, callback in enumerate(litellm.failure_callback):  # type: ignore
                 if inspect.iscoroutinefunction(callback):
-                    litellm._async_failure_callback.append(callback)
+                    litellm.logging_callback_manager.add_litellm_async_failure_callback(
+                        callback
+                    )
                     removed_async_items.append(index)
+                elif (
+                    callback in litellm._known_custom_logger_compatible_callbacks
+                    and isinstance(callback, str)
+                ):
+                    _add_custom_logger_callback_to_specific_event(callback, "failure")
 
             # Pop the async items from failure_callback in reverse order to avoid index issues
             for index in reversed(removed_async_items):
@@ -1384,7 +1437,27 @@ def _select_tokenizer(
 
 
 @lru_cache(maxsize=128)
-def _select_tokenizer_helper(model: str):
+def _select_tokenizer_helper(model: str) -> SelectTokenizerResponse:
+
+    if litellm.disable_hf_tokenizer_download is True:
+        return _return_openai_tokenizer(model)
+
+    try:
+        result = _return_huggingface_tokenizer(model)
+        if result is not None:
+            return result
+    except Exception as e:
+        verbose_logger.debug(f"Error selecting tokenizer: {e}")
+
+    # default - tiktoken
+    return _return_openai_tokenizer(model)
+
+
+def _return_openai_tokenizer(model: str) -> SelectTokenizerResponse:
+    return {"type": "openai_tokenizer", "tokenizer": encoding}
+
+
+def _return_huggingface_tokenizer(model: str) -> Optional[SelectTokenizerResponse]:
     if model in litellm.cohere_models and "command-r" in model:
         # cohere
         cohere_tokenizer = Tokenizer.from_pretrained(
@@ -1403,12 +1476,8 @@ def _select_tokenizer_helper(model: str):
     elif "llama-3" in model.lower():
         tokenizer = Tokenizer.from_pretrained("Xenova/llama-3-tokenizer")
         return {"type": "huggingface_tokenizer", "tokenizer": tokenizer}
-    # default - tiktoken
     else:
-        return {
-            "type": "openai_tokenizer",
-            "tokenizer": encoding,
-        }  # default to openai tokenizer
+        return None
 
 
 def encode(model="", text="", custom_tokenizer: Optional[dict] = None):
@@ -1656,7 +1725,7 @@ def _format_type(props, indent):
 
 def token_counter(
     model="",
-    custom_tokenizer: Optional[dict] = None,
+    custom_tokenizer: Optional[Union[dict, SelectTokenizerResponse]] = None,
     text: Optional[Union[str, List[str]]] = None,
     messages: Optional[List] = None,
     count_response_tokens: Optional[bool] = False,
@@ -1716,7 +1785,10 @@ def token_counter(
                     for tool_call in message["tool_calls"]:
                         if "function" in tool_call:
                             function_arguments = tool_call["function"]["arguments"]
-                            text += function_arguments
+                            text = (
+                                text if isinstance(text, str) else "".join(text or [])
+                            ) + (str(function_arguments) if function_arguments else "")
+
         else:
             raise ValueError("text and messages cannot both be None")
     elif isinstance(text, List):
@@ -1866,6 +1938,15 @@ def supports_function_calling(
         model=model,
         custom_llm_provider=custom_llm_provider,
         key="supports_function_calling",
+    )
+
+
+def supports_tool_choice(model: str, custom_llm_provider: Optional[str] = None) -> bool:
+    """
+    Check if the given model supports `tool_choice` and return a boolean value.
+    """
+    return _supports_factory(
+        model=model, custom_llm_provider=custom_llm_provider, key="supports_tool_choice"
     )
 
 
@@ -2617,6 +2698,7 @@ def get_optional_params(  # noqa: PLR0915
     api_version=None,
     parallel_tool_calls=None,
     drop_params=None,
+    reasoning_effort=None,
     additional_drop_params=None,
     messages: Optional[List[AllMessageValues]] = None,
     **kwargs,
@@ -2702,6 +2784,7 @@ def get_optional_params(  # noqa: PLR0915
         "drop_params": None,
         "additional_drop_params": None,
         "messages": None,
+        "reasoning_effort": None,
     }
 
     # filter out those parameters that were passed with non-default values
@@ -3416,7 +3499,7 @@ def get_optional_params(  # noqa: PLR0915
             ),
         )
     elif custom_llm_provider == "azure":
-        if litellm.AzureOpenAIO1Config().is_o1_model(model=model):
+        if litellm.AzureOpenAIO1Config().is_o_series_model(model=model):
             optional_params = litellm.AzureOpenAIO1Config().map_openai_params(
                 non_default_params=non_default_params,
                 optional_params=optional_params,
@@ -3947,7 +4030,7 @@ def _check_provider_match(model_info: dict, custom_llm_provider: Optional[str]) 
             "litellm_provider"
         ].startswith("fireworks_ai"):
             return True
-        elif custom_llm_provider == "bedrock" and model_info[
+        elif custom_llm_provider.startswith("bedrock") and model_info[
             "litellm_provider"
         ].startswith("bedrock"):
             return True
@@ -4118,6 +4201,7 @@ def _get_model_info_helper(  # noqa: PLR0915
                 supports_system_messages=None,
                 supports_response_schema=None,
                 supports_function_calling=None,
+                supports_tool_choice=None,
                 supports_assistant_prefill=None,
                 supports_prompt_caching=None,
                 supports_pdf_input=None,
@@ -4262,6 +4346,7 @@ def _get_model_info_helper(  # noqa: PLR0915
                 supports_function_calling=_model_info.get(
                     "supports_function_calling", False
                 ),
+                supports_tool_choice=_model_info.get("supports_tool_choice", False),
                 supports_assistant_prefill=_model_info.get(
                     "supports_assistant_prefill", False
                 ),
@@ -4340,6 +4425,7 @@ def get_model_info(model: str, custom_llm_provider: Optional[str] = None) -> Mod
             supports_response_schema: Optional[bool]
             supports_vision: Optional[bool]
             supports_function_calling: Optional[bool]
+            supports_tool_choice: Optional[bool]
             supports_prompt_caching: Optional[bool]
             supports_audio_input: Optional[bool]
             supports_audio_output: Optional[bool]
@@ -5801,6 +5887,10 @@ def validate_chat_completion_user_messages(messages: List[AllMessageValues]):
                                 if item.get("type") not in ValidUserMessageContentTypes:
                                     raise Exception("invalid content type")
         except Exception as e:
+            if isinstance(e, KeyError):
+                raise Exception(
+                    f"Invalid message={m} at index {idx}. Please ensure all messages are valid OpenAI chat completion messages."
+                )
             if "invalid content type" in str(e):
                 raise Exception(
                     f"Invalid user message={m} at index {idx}. Please ensure all user messages are valid OpenAI chat completion messages."
@@ -5849,9 +5939,9 @@ class ProviderConfigManager:
         """
         if (
             provider == LlmProviders.OPENAI
-            and litellm.openAIO1Config.is_model_o1_reasoning_model(model=model)
+            and litellm.openaiOSeriesConfig.is_model_o_series_model(model=model)
         ):
-            return litellm.OpenAIO1Config()
+            return litellm.openaiOSeriesConfig
         elif litellm.LlmProviders.DEEPSEEK == provider:
             return litellm.DeepSeekChatConfig()
         elif litellm.LlmProviders.GROQ == provider:
@@ -5924,7 +6014,7 @@ class ProviderConfigManager:
         ):
             return litellm.AI21ChatConfig()
         elif litellm.LlmProviders.AZURE == provider:
-            if litellm.AzureOpenAIO1Config().is_o1_model(model=model):
+            if litellm.AzureOpenAIO1Config().is_o_series_model(model=model):
                 return litellm.AzureOpenAIO1Config()
             return litellm.AzureOpenAIConfig()
         elif litellm.LlmProviders.AZURE_AI == provider:
@@ -5976,18 +6066,26 @@ class ProviderConfigManager:
             return litellm.PetalsConfig()
         elif litellm.LlmProviders.BEDROCK == provider:
             base_model = litellm.AmazonConverseConfig()._get_base_model(model)
-            if base_model in litellm.bedrock_converse_models:
-                pass
-            elif "amazon" in model:  # amazon titan llms
+            bedrock_provider = litellm.BedrockLLM.get_bedrock_invoke_provider(model)
+            if (
+                base_model in litellm.bedrock_converse_models
+                or "converse_like" in model
+            ):
+                return litellm.AmazonConverseConfig()
+            elif bedrock_provider == "amazon":  # amazon titan llms
                 return litellm.AmazonTitanConfig()
-            elif "meta" in model:  # amazon / meta llms
+            elif (
+                bedrock_provider == "meta" or bedrock_provider == "llama"
+            ):  # amazon / meta llms
                 return litellm.AmazonLlamaConfig()
-            elif "ai21" in model:  # ai21 llms
+            elif bedrock_provider == "ai21":  # ai21 llms
                 return litellm.AmazonAI21Config()
-            elif "cohere" in model:  # cohere models on bedrock
+            elif bedrock_provider == "cohere":  # cohere models on bedrock
                 return litellm.AmazonCohereConfig()
-            elif "mistral" in model:  # mistral models on bedrock
+            elif bedrock_provider == "mistral":  # mistral models on bedrock
                 return litellm.AmazonMistralConfig()
+            else:
+                return litellm.AmazonInvokeConfig()
         return litellm.OpenAIGPTConfig()
 
     @staticmethod
@@ -6198,3 +6296,21 @@ def get_non_default_completion_params(kwargs: dict) -> dict:
         k: v for k, v in kwargs.items() if k not in default_params
     }  # model-specific params - pass them straight to the model/provider
     return non_default_params
+
+
+def add_openai_metadata(metadata: dict) -> dict:
+    """
+    Add metadata to openai optional parameters, excluding hidden params
+
+    Args:
+        params (dict): Dictionary of API parameters
+        metadata (dict, optional): Metadata to include in the request
+
+    Returns:
+        dict: Updated parameters dictionary with visible metadata only
+    """
+    if metadata is None:
+        return None
+    # Only include non-hidden parameters
+    visible_metadata = {k: v for k, v in metadata.items() if k != "hidden_params"}
+    return visible_metadata.copy()

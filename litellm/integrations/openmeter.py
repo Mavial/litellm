@@ -53,7 +53,15 @@ class OpenMeterLogger(CustomLogger):
         call_id = response_obj.get("id", kwargs.get("litellm_call_id"))
         dt = get_utc_datetime().isoformat()
         cost = kwargs.get("response_cost", None)
-        model = kwargs.get("model")
+
+
+        lite = ["gpt-4o-mini", "gemini-2.0-flash", "mixtral-8x7b-instruct-v0.1"]
+
+        if kwargs.get("model") in lite:
+            model = "lite"
+        else:
+            model = "pro"
+
         usage = {}
         if (
             isinstance(response_obj, litellm.ModelResponse)
